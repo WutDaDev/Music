@@ -10,71 +10,69 @@ const config = {
     targetTextChannelId: process.env.TARGET_TEXT_CHANNEL_ID,
     musicLink: process.env.MUSIC_LINK,
     prefix: process.env.PREFIX || '!',
-    hydraseiId: process.env.HYDRASEI_ID,
     jockieBotIds: process.env.JOCKIE_BOT_IDS.split(','),
     trackedUserIds: process.env.TRACKED_USER_IDS.split(',')
 };
 
 const userJoinTimes = new Map();
 
-function syncChannelMembers() {
+// This function ONLY tracks people currently inside the VC
+function updateTracking() {
     const channel = client.channels.cache.get(config.targetVoiceChannelId);
-    if (channel && channel.isVoice()) {
-        channel.members.forEach(member => {
-            if (config.trackedUserIds.includes(member.id) && member.id !== config.hydraseiId) {
-                if (!userJoinTimes.has(member.id)) {
-                    userJoinTimes.set(member.id, Date.now());
-                }
-            }
-        });
-    }
+    if (!channel || !channel.isVoice()) return;
+
+    // Remove users who left
+    userJoinTimes.forEach((_, userId) => {
+        if (!channel.members.has(userId)) {
+            userJoinTimes.delete(userId);
+        }
+    });
+
+    // Add users who are in VC
+    channel.members.forEach(member => {
+        if (config.trackedUserIds.includes(member.id) && !userJoinTimes.has(member.id)) {
+            userJoinTimes.set(member.id, Date.now());
+        }
+    });
 }
 
 client.on('ready', async () => {
     console.log(`[STATUS] Logged in as ${client.user.tag}`);
-    setTimeout(syncChannelMembers, 5000);
-    setInterval(() => {
-        console.log(`[HEARTBEAT] Tracking ${userJoinTimes.size} users.`);
-        syncChannelMembers();
-    }, 300000);
+    // Check every 30 seconds to ensure the tracking is "real"
+    setInterval(updateTracking, 30000);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
-    const userId = newState.member.id;
-
-    if (config.jockieBotIds.includes(userId)) {
+    // 1. Music Trigger Logic
+    // Trigger only if a Jockie bot leaves the target channel
+    if (config.jockieBotIds.includes(newState.member.id)) {
         if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
-            const textChannel = client.channels.cache.get(config.targetTextChannelId);
-            if (textChannel) {
-                await textChannel.send(`m!play ${config.musicLink}`);
-                setTimeout(() => textChannel.send('m!shuffle'), 4000);
-                setTimeout(() => textChannel.send('m!loop'), 8000);
+            console.log("[MUSIC] Jockie left. Executing sequence.");
+            const channel = client.channels.cache.get(config.targetTextChannelId);
+            if (channel) {
+                await channel.send(`m!play ${config.musicLink}`);
+                setTimeout(() => channel.send('m!shuffle'), 3000);
+                setTimeout(() => channel.send('m!loop'), 6000);
+            } else {
+                console.log("[ERROR] Cannot send music command: Text channel not found/cached.");
             }
         }
     }
-
-    if (config.trackedUserIds.includes(userId) && userId !== config.hydraseiId) {
-        if (newState.channelId === config.targetVoiceChannelId) {
-            if (!userJoinTimes.has(userId)) userJoinTimes.set(userId, Date.now());
-        } else if (oldState.channelId === config.targetVoiceChannelId) {
-            userJoinTimes.delete(userId);
-            try {
-                const owner = await client.users.fetch(config.ownerId);
-                await owner.send(`⚠️ **Alert:** \`${newState.member.user.tag}\` left the VC.`);
-            } catch (e) {}
-        }
-    }
+    
+    // 2. Tracking Logic handled by updateTracking
+    updateTracking();
 });
 
 client.on('messageCreate', async (message) => {
     if (message.channel.type !== 'DM' || message.author.id !== config.ownerId) return;
 
     if (message.content.includes(`${config.prefix}uptime`)) {
-        let report = "📊 **Uptime & XP Report:**\n";
-        if (userJoinTimes.size === 0) report += "No tracked users in VC.";
+        updateTracking(); // Force refresh before reporting
+        let report = "📊 **User Session Report:**\n";
+        if (userJoinTimes.size === 0) report += "No tracked users currently in VC.";
         userJoinTimes.forEach((joinTime, userId) => {
             const mins = Math.floor((Date.now() - joinTime) / 60000);
-            report += `<@${userId}>: ${mins}m (${Math.floor(mins / 3)} XP)\n`;
+            report += `<@${userId}>: Online for ${mins}m\n`;
         });
         await message.channel.send(report);
     }
