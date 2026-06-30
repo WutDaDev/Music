@@ -16,15 +16,8 @@ const config = {
 
 const userJoinTimes = new Map();
 
-// --- SAFETY UTILITY ---
 async function safeSend(channel, text) {
     try {
-        // Check permissions before attempting to send
-        const permissions = channel.permissionsFor(client.user);
-        if (!permissions || !permissions.has('SEND_MESSAGES')) {
-            console.error(`[SAFETY] Missing SEND_MESSAGES permission in ${channel.name}`);
-            return false;
-        }
         await channel.send(text);
         console.log(`[SUCCESS] Message sent: ${text}`);
         return true;
@@ -34,21 +27,30 @@ async function safeSend(channel, text) {
     }
 }
 
-// --- LOGIC ---
 function updateTracking() {
     const channel = client.channels.cache.get(config.targetVoiceChannelId);
     if (!channel || !channel.isVoice()) return;
 
-    userJoinTimes.forEach((_, userId) => { if (!channel.members.has(userId)) userJoinTimes.delete(userId); });
+    // 1. Remove users who have left
+    userJoinTimes.forEach((_, userId) => {
+        if (!channel.members.has(userId)) userJoinTimes.delete(userId);
+    });
+
+    // 2. Add users who are currently in the VC
     channel.members.forEach(member => {
         if (config.trackedUserIds.includes(member.id) && !userJoinTimes.has(member.id)) {
             userJoinTimes.set(member.id, Date.now());
+            console.log(`[TRACKING] Started tracking: ${member.user.tag}`);
         }
     });
 }
 
 client.on('ready', async () => {
     console.log(`[STATUS] Logged in as ${client.user.tag}`);
+    
+    // Background refresh every 60 seconds to keep data perfect
+    setInterval(updateTracking, 60000);
+    
     const channel = client.channels.cache.get(config.targetTextChannelId);
     if (channel) {
         console.log(`[VERIFY] Bot has access to text channel: ${channel.name}`);
@@ -63,7 +65,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
         if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
             const channel = client.channels.cache.get(config.targetTextChannelId);
             if (channel) {
-                // Sequential delays to avoid triggering Discord's rate-limit
                 await safeSend(channel, `m!play ${config.musicLink}`);
                 setTimeout(() => safeSend(channel, 'm!shuffle'), 3000);
                 setTimeout(() => safeSend(channel, 'm!loop'), 6000);
@@ -74,13 +75,12 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 });
 
 client.on('messageCreate', async (message) => {
-    // Enforce DM only and restrict to Owner ID
     if (message.channel.type !== 'DM' || message.author.id !== config.ownerId) return;
 
     if (message.content.includes(`${config.prefix}uptime`)) {
-        updateTracking();
+        updateTracking(); 
         let report = "📊 **User Session Report:**\n";
-        if (userJoinTimes.size === 0) report += "No tracked users in VC.";
+        if (userJoinTimes.size === 0) report += "No tracked users currently in VC.";
         userJoinTimes.forEach((joinTime, userId) => {
             const mins = Math.floor((Date.now() - joinTime) / 60000);
             report += `<@${userId}>: Online for ${mins}m\n`;
