@@ -17,47 +17,34 @@ const config = {
 const userJoinTimes = new Map();
 
 client.on('ready', async () => {
-    console.log(`Selfbot logged in as ${client.user.tag}`);
-    
-    // Initial population of the tracker
+    console.log(`Selfbot active as ${client.user.tag}`);
     setTimeout(() => {
         const channel = client.channels.cache.get(config.targetVoiceChannelId);
-        if (channel && channel.type === 'GUILD_VOICE') {
+        if (channel?.isVoice()) {
             channel.members.forEach(member => {
                 if (config.trackedUserIds.includes(member.id) && member.id !== config.hydraseiId) {
                     userJoinTimes.set(member.id, Date.now());
                 }
             });
-            console.log(`Initialized tracking for ${userJoinTimes.size} users.`);
         }
     }, 5000);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const userId = newState.member.id;
-
-    // Jockie Bot Logic
-    if (config.jockieBotIds.includes(userId)) {
-        if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
-            console.log("Jockie bot left. Executing sequence.");
-            startMusicSequence();
-        }
+    if (config.jockieBotIds.includes(userId) && oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
+        startMusicSequence();
         return;
     }
-
-    // Track/Alert Logic for specific users
     if (config.trackedUserIds.includes(userId) && userId !== config.hydraseiId) {
-        // User joined
         if (newState.channelId === config.targetVoiceChannelId && oldState.channelId !== config.targetVoiceChannelId) {
             userJoinTimes.set(userId, Date.now());
-        }
-        // User left
-        if (oldState.channelId === config.targetVoiceChannelId && newState.channelId !== config.targetVoiceChannelId) {
+        } else if (oldState.channelId === config.targetVoiceChannelId && newState.channelId !== config.targetVoiceChannelId) {
             userJoinTimes.delete(userId);
             try {
                 const owner = await client.users.fetch(config.ownerId);
-                await owner.send(`⚠️ **Alert:** \`${newState.member.user.tag}\` has left the voice channel.`);
-            } catch (e) { console.error("Could not DM owner."); }
+                await owner.send(`⚠️ Alert: \`${newState.member.user.tag}\` has left the VC.`);
+            } catch (e) {}
         }
     }
 });
@@ -65,7 +52,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 async function startMusicSequence() {
     const textChannel = client.channels.cache.get(config.targetTextChannelId);
     if (!textChannel) return;
-
     await textChannel.send(`m!play ${config.musicLink}`);
     setTimeout(() => textChannel.send('m!shuffle'), 4000);
     setTimeout(() => textChannel.send('m!loop'), 8000);
@@ -73,22 +59,16 @@ async function startMusicSequence() {
 
 client.on('messageCreate', async (message) => {
     if (message.author.id !== client.user.id || !message.content.startsWith(config.prefix)) return;
-    
     if (message.content.startsWith(config.prefix + 'uptime')) {
         let report = "📊 **Uptime & XP Report:**\n";
         const now = Date.now();
-        
         userJoinTimes.forEach((joinTime, userId) => {
             const mins = Math.floor((now - joinTime) / 60000);
-            const xp = Math.floor(mins / 3);
-            report += `<@${userId}>: ${mins} mins -> **${xp} XP**\n`;
+            report += `<@${userId}>: ${mins}m (${Math.floor(mins / 3)} XP)\n`;
         });
-
-        try {
-            const owner = await client.users.fetch(config.ownerId);
-            await owner.send(report);
-            message.delete().catch(() => {});
-        } catch (e) { console.error("Could not send DM."); }
+        const owner = await client.users.fetch(config.ownerId);
+        await owner.send(report);
+        message.delete().catch(() => {});
     }
 });
 
