@@ -18,92 +18,52 @@ const config = {
 const userJoinTimes = new Map();
 
 client.on('ready', async () => {
-    console.log(`[READY] Logged in as ${client.user.tag}`);
+    console.log(`[STATUS] Bot logged in as ${client.user.tag}`);
     
-    setTimeout(() => {
-        const channel = client.channels.cache.get(config.targetVoiceChannelId);
-        if (channel && channel.isVoice()) {
-            channel.members.forEach(member => {
-                if (config.trackedUserIds.includes(member.id) && member.id !== config.hydraseiId) {
-                    userJoinTimes.set(member.id, Date.now());
-                    console.log(`[TRACK] Tracking ${member.user.tag}`);
-                }
-            });
-            console.log(`[READY] Initial tracking count: ${userJoinTimes.size}`);
-        }
-    }, 5000);
+    // Heartbeat to confirm process is running
+    setInterval(() => {
+        console.log(`[HEARTBEAT] Active. Tracking ${userJoinTimes.size} users.`);
+    }, 60000);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const userId = newState.member.id;
 
-    // Jockie Bot Logic
-    if (config.jockieBotIds.includes(userId)) {
-        if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
-            console.log("[MUSIC] Detected Jockie Bot leaving. Triggering sequence.");
-            startMusicSequence();
+    // Music Trigger
+    if (config.jockieBotIds.includes(userId) && oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
+        const textChannel = client.channels.cache.get(config.targetTextChannelId);
+        if (textChannel) {
+            await textChannel.send(`m!play ${config.musicLink}`);
+            setTimeout(() => textChannel.send('m!shuffle'), 4000);
+            setTimeout(() => textChannel.send('m!loop'), 8000);
         }
-        return;
     }
 
-    // User Tracking
+    // Tracking
     if (config.trackedUserIds.includes(userId) && userId !== config.hydraseiId) {
-        if (newState.channelId === config.targetVoiceChannelId && oldState.channelId !== config.targetVoiceChannelId) {
+        if (newState.channelId === config.targetVoiceChannelId) {
             userJoinTimes.set(userId, Date.now());
-            console.log(`[TRACK] ${newState.member.user.tag} joined.`);
-        } 
-        else if (oldState.channelId === config.targetVoiceChannelId && newState.channelId !== config.targetVoiceChannelId) {
+        } else {
             userJoinTimes.delete(userId);
-            console.log(`[TRACK] ${newState.member.user.tag} left.`);
-            try {
-                const owner = await client.users.fetch(config.ownerId);
-                await owner.send(`⚠️ **Alert:** \`${newState.member.user.tag}\` has left the voice channel.`);
-            } catch (e) { console.error("[ERROR] Failed to DM owner:", e); }
         }
     }
 });
 
-async function startMusicSequence() {
-    const textChannel = client.channels.cache.get(config.targetTextChannelId);
-    if (!textChannel) return console.log("[ERROR] Text channel not found.");
-
-    await textChannel.send(`m!play ${config.musicLink}`);
-    setTimeout(() => textChannel.send('m!shuffle'), 4000);
-    setTimeout(() => textChannel.send('m!loop'), 8000);
-    console.log("[MUSIC] Music sequence sent.");
-}
-
 client.on('messageCreate', async (message) => {
-    // Only respond to your own messages
+    // Basic command filter
     if (message.author.id !== client.user.id) return;
     
-    // Debugging: Log every message sent
-    if (message.content.startsWith(config.prefix)) {
-        console.log(`[CMD] Detected command: ${message.content}`);
-    }
-    
-    if (message.content.trim() === `${config.prefix}uptime`) {
-        console.log("[CMD] Uptime report requested.");
-        let report = "📊 **Uptime & XP Report:**\n";
-        const now = Date.now();
-        
-        if (userJoinTimes.size === 0) report += "No tracked users currently in VC.";
+    if (message.content.includes(`${config.prefix}uptime`)) {
+        console.log("[CMD] Uptime triggered");
+        let report = "📊 **Uptime Report:**\n";
         
         userJoinTimes.forEach((joinTime, userId) => {
-            const mins = Math.floor((now - joinTime) / 60000);
-            const xp = Math.floor(mins / 3);
-            report += `<@${userId}>: ${mins} mins -> **${xp} XP**\n`;
+            const mins = Math.floor((Date.now() - joinTime) / 60000);
+            report += `<@${userId}>: ${mins}m (${Math.floor(mins / 3)} XP)\n`;
         });
 
-        try {
-            const owner = await client.users.fetch(config.ownerId);
-            await owner.send(report);
-            console.log("[CMD] Uptime report sent to owner.");
-            await message.delete().catch(() => {});
-        } catch (e) { 
-            console.error("[ERROR] Could not send DM:", e);
-            message.reply("Error: Could not DM owner. Check console.");
-        }
+        // Try channel send first to verify if logic is working
+        await message.channel.send(report || "No data.");
     }
 });
 
