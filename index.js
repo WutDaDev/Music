@@ -1,15 +1,7 @@
 require('dotenv').config();
-const { Client, Intents } = require('discord.js-selfbot-v13');
+const { Client } = require('discord.js-selfbot-v13');
 
-// Intents are CRITICAL for the bot to "see" users in the channel
-const client = new Client({ 
-    checkUpdate: false,
-    intents: [
-        Intents.FLAGS.GUILDS,
-        Intents.FLAGS.GUILD_VOICE_STATES,
-        Intents.FLAGS.GUILD_MESSAGES
-    ]
-});
+const client = new Client({ checkUpdate: false });
 
 const config = {
     token: process.env.DISCORD_TOKEN,
@@ -26,66 +18,76 @@ const config = {
 const userJoinTimes = new Map();
 
 client.on('ready', async () => {
-    console.log(`Selfbot active as ${client.user.tag}`);
+    console.log(`[READY] Logged in as ${client.user.tag}`);
     
-    // Populate tracker for users already in VC
-    const channel = client.channels.cache.get(config.targetVoiceChannelId);
-    if (channel && channel.isVoice()) {
-        channel.members.forEach(member => {
-            if (config.trackedUserIds.includes(member.id) && member.id !== config.hydraseiId) {
-                userJoinTimes.set(member.id, Date.now());
-            }
-        });
-        console.log(`Initialized tracking for ${userJoinTimes.size} users.`);
-    }
+    setTimeout(() => {
+        const channel = client.channels.cache.get(config.targetVoiceChannelId);
+        if (channel && channel.isVoice()) {
+            channel.members.forEach(member => {
+                if (config.trackedUserIds.includes(member.id) && member.id !== config.hydraseiId) {
+                    userJoinTimes.set(member.id, Date.now());
+                    console.log(`[TRACK] Tracking ${member.user.tag}`);
+                }
+            });
+            console.log(`[READY] Initial tracking count: ${userJoinTimes.size}`);
+        }
+    }, 5000);
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const userId = newState.member.id;
 
-    // 1. Jockie Bot Logic
+    // Jockie Bot Logic
     if (config.jockieBotIds.includes(userId)) {
         if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
-            console.log("Jockie bot left. Executing sequence.");
+            console.log("[MUSIC] Detected Jockie Bot leaving. Triggering sequence.");
             startMusicSequence();
         }
         return;
     }
 
-    // 2. User Tracking
+    // User Tracking
     if (config.trackedUserIds.includes(userId) && userId !== config.hydraseiId) {
-        // User joined
         if (newState.channelId === config.targetVoiceChannelId && oldState.channelId !== config.targetVoiceChannelId) {
             userJoinTimes.set(userId, Date.now());
+            console.log(`[TRACK] ${newState.member.user.tag} joined.`);
         } 
-        // User left
         else if (oldState.channelId === config.targetVoiceChannelId && newState.channelId !== config.targetVoiceChannelId) {
             userJoinTimes.delete(userId);
+            console.log(`[TRACK] ${newState.member.user.tag} left.`);
             try {
                 const owner = await client.users.fetch(config.ownerId);
-                await owner.send(`⚠️ **Alert:** \`${newState.member.user.tag}\` left the VC.`);
-            } catch (e) { console.error("Could not DM owner:", e); }
+                await owner.send(`⚠️ **Alert:** \`${newState.member.user.tag}\` has left the voice channel.`);
+            } catch (e) { console.error("[ERROR] Failed to DM owner:", e); }
         }
     }
 });
 
 async function startMusicSequence() {
     const textChannel = client.channels.cache.get(config.targetTextChannelId);
-    if (!textChannel) return;
+    if (!textChannel) return console.log("[ERROR] Text channel not found.");
 
     await textChannel.send(`m!play ${config.musicLink}`);
     setTimeout(() => textChannel.send('m!shuffle'), 4000);
     setTimeout(() => textChannel.send('m!loop'), 8000);
+    console.log("[MUSIC] Music sequence sent.");
 }
 
 client.on('messageCreate', async (message) => {
-    if (message.author.id !== client.user.id || !message.content.startsWith(config.prefix)) return;
+    // Only respond to your own messages
+    if (message.author.id !== client.user.id) return;
     
-    if (message.content === config.prefix + 'uptime') {
+    // Debugging: Log every message sent
+    if (message.content.startsWith(config.prefix)) {
+        console.log(`[CMD] Detected command: ${message.content}`);
+    }
+    
+    if (message.content.trim() === `${config.prefix}uptime`) {
+        console.log("[CMD] Uptime report requested.");
         let report = "📊 **Uptime & XP Report:**\n";
         const now = Date.now();
         
-        if (userJoinTimes.size === 0) report += "No tracked users in VC.";
+        if (userJoinTimes.size === 0) report += "No tracked users currently in VC.";
         
         userJoinTimes.forEach((joinTime, userId) => {
             const mins = Math.floor((now - joinTime) / 60000);
@@ -96,11 +98,11 @@ client.on('messageCreate', async (message) => {
         try {
             const owner = await client.users.fetch(config.ownerId);
             await owner.send(report);
-            console.log("Report sent to owner.");
-            message.delete().catch(() => {});
+            console.log("[CMD] Uptime report sent to owner.");
+            await message.delete().catch(() => {});
         } catch (e) { 
-            console.error("Could not send DM:", e);
-            message.reply("Failed to send DM to owner. Check console logs.");
+            console.error("[ERROR] Could not send DM:", e);
+            message.reply("Error: Could not DM owner. Check console.");
         }
     }
 });
