@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { Client } = require('discord.js-selfbot-v13');
+const moment = require('moment-timezone'); // Make sure to: npm install moment-timezone
 
 const client = new Client({ checkUpdate: false });
 
@@ -16,74 +17,59 @@ const config = {
 
 const userJoinTimes = new Map();
 
-async function safeSend(channel, text) {
-    try {
-        await channel.send(text);
-        console.log(`[SUCCESS] Message sent: ${text}`);
-        return true;
-    } catch (e) {
-        console.error(`[SAFETY] Failed to send: ${e.message}`);
-        return false;
-    }
+// Helper: Delay function for "tutu" (step-by-step) sending
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function sendMusicSequence() {
+    const channel = client.channels.cache.get(config.targetTextChannelId);
+    if (!channel) return console.log("[ERROR] Text channel not found.");
+
+    console.log("[MUSIC] Sending sequence with delays...");
+    await channel.send(`m!play ${config.musicLink}`);
+    await sleep(4000); // Wait 4s
+    await channel.send('m!shuffle');
+    await sleep(4000); // Wait 4s
+    await channel.send('m!loop');
+    console.log("[MUSIC] Sequence finished.");
 }
 
 function updateTracking() {
     const channel = client.channels.cache.get(config.targetVoiceChannelId);
     if (!channel || !channel.isVoice()) return;
-
-    // 1. Remove users who have left
-    userJoinTimes.forEach((_, userId) => {
-        if (!channel.members.has(userId)) userJoinTimes.delete(userId);
-    });
-
-    // 2. Add users who are currently in the VC
+    
     channel.members.forEach(member => {
-        if (config.trackedUserIds.includes(member.id) && !userJoinTimes.has(member.id)) {
-            userJoinTimes.set(member.id, Date.now());
-            console.log(`[TRACKING] Started tracking: ${member.user.tag}`);
+        if (config.trackedUserIds.includes(member.id)) {
+            // If we don't have them yet, mark their start time as 00:00:00 GMT+7
+            if (!userJoinTimes.has(member.id)) {
+                const startOfDay = moment().tz("Asia/Bangkok").startOf('day').valueOf();
+                userJoinTimes.set(member.id, startOfDay);
+            }
         }
     });
 }
 
-client.on('ready', async () => {
-    console.log(`[STATUS] Logged in as ${client.user.tag}`);
-    
-    // Background refresh every 60 seconds to keep data perfect
-    setInterval(updateTracking, 60000);
-    
-    const channel = client.channels.cache.get(config.targetTextChannelId);
-    if (channel) {
-        console.log(`[VERIFY] Bot has access to text channel: ${channel.name}`);
-    } else {
-        console.log("[CRITICAL] Bot cannot find the text channel ID!");
-    }
-});
-
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    // Music Trigger
-    if (config.jockieBotIds.includes(newState.member.id)) {
-        if (oldState.channelId === config.targetVoiceChannelId && newState.channelId === null) {
-            const channel = client.channels.cache.get(config.targetTextChannelId);
-            if (channel) {
-                await safeSend(channel, `m!play ${config.musicLink}`);
-                setTimeout(() => safeSend(channel, 'm!shuffle'), 3000);
-                setTimeout(() => safeSend(channel, 'm!loop'), 6000);
-            }
-        }
-    }
-    updateTracking();
-});
+client.on('ready', () => console.log(`[STATUS] Logged in as ${client.user.tag}`));
 
 client.on('messageCreate', async (message) => {
     if (message.channel.type !== 'DM' || message.author.id !== config.ownerId) return;
 
+    // Trigger Music manually
+    if (message.content.includes(`${config.prefix}um`)) {
+        await message.channel.send("⏳ Đang gửi lệnh nhạc...");
+        await sendMusicSequence();
+        await message.channel.send("✅ Đã gửi xong.");
+    }
+
+    // Uptime report
     if (message.content.includes(`${config.prefix}uptime`)) {
-        updateTracking(); 
-        let report = "📊 **User Session Report:**\n";
-        if (userJoinTimes.size === 0) report += "No tracked users currently in VC.";
-        userJoinTimes.forEach((joinTime, userId) => {
-            const mins = Math.floor((Date.now() - joinTime) / 60000);
-            report += `<@${userId}>: Online for ${mins}m\n`;
+        updateTracking();
+        let report = "📊 **Báo cáo từ 00:00 GMT+7:**\n";
+        
+        userJoinTimes.forEach((startTime, userId) => {
+            const durationMs = Date.now() - startTime;
+            const hours = Math.floor(durationMs / 3600000);
+            const mins = Math.floor((durationMs % 3600000) / 60000);
+            report += `<@${userId}>: ${hours}h ${mins}m\n`;
         });
         await message.channel.send(report);
     }
