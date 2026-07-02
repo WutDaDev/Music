@@ -17,9 +17,10 @@ const config = {
 
 const userJoinTimes = new Map();
 
-// Helper: Delay function for "tutu" (step-by-step) sending
+// Helper: Delay function
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Send the music start sequence with delays
 async function sendMusicSequence() {
     const channel = client.channels.cache.get(config.targetTextChannelId);
     if (!channel) return console.log("[ERROR] Text channel not found.");
@@ -33,10 +34,21 @@ async function sendMusicSequence() {
     console.log("[MUSIC] Sequence finished.");
 }
 
+// Send the stop command
+async function sendStopCommand() {
+    const channel = client.channels.cache.get(config.targetTextChannelId);
+    if (!channel) return console.log("[ERROR] Text channel not found.");
+
+    console.log("[MUSIC] Sending stop command...");
+    await channel.send('m!stop');
+    console.log("[MUSIC] Stop sent.");
+}
+
+// Track when tracked users join the voice channel (start of day GMT+7)
 function updateTracking() {
     const channel = client.channels.cache.get(config.targetVoiceChannelId);
     if (!channel || !channel.isVoice()) return;
-    
+
     channel.members.forEach(member => {
         if (config.trackedUserIds.includes(member.id)) {
             // If we don't have them yet, mark their start time as 00:00:00 GMT+7
@@ -60,11 +72,18 @@ client.on('messageCreate', async (message) => {
         await message.channel.send("✅ Đã gửi xong.");
     }
 
+    // Stop the music
+    if (message.content.includes(`${config.prefix}stop`)) {
+        await message.channel.send("⏹️ Đang gửi lệnh dừng nhạc...");
+        await sendStopCommand();
+        await message.channel.send("✅ Đã gửi lệnh dừng.");
+    }
+
     // Uptime report
     if (message.content.includes(`${config.prefix}uptime`)) {
         updateTracking();
         let report = "📊 **Báo cáo từ 00:00 GMT+7:**\n";
-        
+
         userJoinTimes.forEach((startTime, userId) => {
             const durationMs = Date.now() - startTime;
             const hours = Math.floor(durationMs / 3600000);
