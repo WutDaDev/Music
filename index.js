@@ -29,7 +29,7 @@ async function sendMusicSequence() {
     await sleep(4000); // Wait 4s
     await channel.send('m!shuffle');
     await sleep(4000); // Wait 4s
-    await channel.send('m!loop');
+    await channel.send('m!loop queue');
     console.log("[MUSIC] Sequence finished.");
 }
 
