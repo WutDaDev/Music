@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client } = require('discord.js-selfbot-v13');
-const moment = require('moment-timezone'); // Make sure to: npm install moment-timezone
+const moment = require('moment-timezone');
 
 const client = new Client({ checkUpdate: false });
 
@@ -9,87 +9,146 @@ const config = {
     ownerId: process.env.OWNER_ID,
     targetVoiceChannelId: process.env.TARGET_VOICE_CHANNEL_ID,
     targetTextChannelId: process.env.TARGET_TEXT_CHANNEL_ID,
-    musicLink: process.env.MUSIC_LINK,
+    // Two playlist links — loaded from .env or hardcoded fallback
+    musicLinks: [
+        process.env.MUSIC_LINK_1 || 'https://music.youtube.com/watch?v=7FDRQifEMUQ&si=SeLYSmnu5pN4iDRf',
+        process.env.MUSIC_LINK_2 || 'https://music.youtube.com/playlist?list=PLSrCGwTLHc8g&si=Fr9UUs5PXu9HFCNz'
+    ],
     prefix: process.env.PREFIX || '!',
-    jockieBotIds: process.env.JOCKIE_BOT_IDS.split(','),
-    trackedUserIds: process.env.TRACKED_USER_IDS.split(',')
+    jockieBotIds: (process.env.JOCKIE_BOT_IDS || '').split(',').filter(Boolean),
+    trackedUserIds: (process.env.TRACKED_USER_IDS || '').split(',').filter(Boolean),
+    autoDeleteMs: 15000 // Auto-delete music messages after 15 seconds
 };
 
 const userJoinTimes = new Map();
 
-// Helper: Delay function
+// Helper: Delay
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Send the music start sequence with delays
+// Helper: Delete a message after a delay, silently fail if already gone
+async function deleteAfter(msg, ms) {
+    if (!msg) return;
+    await sleep(ms);
+    try { await msg.delete(); } catch (_) {}
+}
+
+// Fetch voice channel text (with caching for voice-channel-bound text channels)
+async function getTargetChannel() {
+    let channel = client.channels.cache.get(config.targetTextChannelId);
+    if (!channel) {
+        try {
+            channel = await client.channels.fetch(config.targetTextChannelId);
+        } catch (err) {
+            console.log("[ERROR] Could not fetch text channel:", err.message);
+            return null;
+        }
+    }
+    return channel;
+}
+
+// Send a message and schedule auto-delete; returns the sent message
+async function sendAndScheduleDelete(channel, content, deleteMs = config.autoDeleteMs) {
+    const msg = await channel.send(content);
+    deleteAfter(msg, deleteMs);
+    return msg;
+}
+
+// Full music start sequence: play link1 first, then link2, then shuffle + loop
 async function sendMusicSequence() {
-    const channel = client.channels.cache.get(config.targetTextChannelId);
+    const channel = await getTargetChannel();
     if (!channel) return console.log("[ERROR] Text channel not found.");
 
-    console.log("[MUSIC] Sending sequence with delays...");
-    await channel.send(`m!play ${config.musicLink}`);
-    await sleep(4000); // Wait 4s
-    await channel.send('m!shuffle');
-    await sleep(4000); // Wait 4s
-    await channel.send('m!loop queue');
-    console.log("[MUSIC] Sequence finished.");
+    console.log("[MUSIC] Starting sequence...");
+
+    // Play first link
+    const msg1 = await sendAndScheduleDelete(channel, `m!play ${config.musicLinks[0]}`);
+    console.log(`[MUSIC] Sent link 1 (auto-delete in ${config.autoDeleteMs / 1000}s)`);
+    await sleep(5000); // Wait for bot to process
+
+    // Play second link (queues it)
+    const msg2 = await sendAndScheduleDelete(channel, `m!play ${config.musicLinks[1]}`);
+    console.log(`[MUSIC] Sent link 2 (auto-delete in ${config.autoDeleteMs / 1000}s)`);
+    await sleep(5000);
+
+    // Shuffle the queue
+    const msg3 = await sendAndScheduleDelete(channel, 'm!shuffle');
+    await sleep(3000);
+
+    // Loop the queue
+    const msg4 = await sendAndScheduleDelete(channel, 'm!loop queue');
+
+    console.log("[MUSIC] Sequence complete. All messages will self-delete.");
 }
 
-// Send the stop command
+// Stop command
 async function sendStopCommand() {
-    const channel = client.channels.cache.get(config.targetTextChannelId);
+    const channel = await getTargetChannel();
     if (!channel) return console.log("[ERROR] Text channel not found.");
 
-    console.log("[MUSIC] Sending stop command...");
-    await channel.send('m!stop');
-    console.log("[MUSIC] Stop sent.");
+    console.log("[MUSIC] Sending stop...");
+    const msg = await sendAndScheduleDelete(channel, 'm!stop');
+    console.log("[MUSIC] Stop sent, will auto-delete.");
 }
 
-// Track when tracked users join the voice channel (start of day GMT+7)
+// Track users currently in the voice channel
 function updateTracking() {
     const channel = client.channels.cache.get(config.targetVoiceChannelId);
     if (!channel || !channel.isVoice()) return;
 
     channel.members.forEach(member => {
-        if (config.trackedUserIds.includes(member.id)) {
-            // If we don't have them yet, mark their start time as 00:00:00 GMT+7
-            if (!userJoinTimes.has(member.id)) {
-                const startOfDay = moment().tz("Asia/Bangkok").startOf('day').valueOf();
-                userJoinTimes.set(member.id, startOfDay);
-            }
+        if (config.trackedUserIds.includes(member.id) && !userJoinTimes.has(member.id)) {
+            const startOfDay = moment().tz("Asia/Bangkok").startOf('day').valueOf();
+            userJoinTimes.set(member.id, startOfDay);
         }
     });
 }
 
-client.on('ready', () => console.log(`[STATUS] Logged in as ${client.user.tag}`));
+client.on('ready', () => {
+    console.log(`[STATUS] Logged in as ${client.user.tag}`);
+    // Pre-cache the target channels on startup
+    client.channels.fetch(config.targetTextChannelId).catch(() => {});
+    client.channels.fetch(config.targetVoiceChannelId).catch(() => {});
+});
 
 client.on('messageCreate', async (message) => {
     if (message.channel.type !== 'DM' || message.author.id !== config.ownerId) return;
 
-    // Trigger Music manually
-    if (message.content.includes(`${config.prefix}um`)) {
-        await message.channel.send("⏳ Đang gửi lệnh nhạc...");
+    const content = message.content.trim();
+
+    // !um — Play music (both links, sequentially)
+    if (content.startsWith(`${config.prefix}um`)) {
+        const statusMsg = await message.channel.send("⏳ Đang gửi lệnh nhạc...");
         await sendMusicSequence();
-        await message.channel.send("✅ Đã gửi xong.");
+        await statusMsg.delete().catch(() => {});
+        const doneMsg = await message.channel.send("✅ Đã gửi xong. Các lệnh sẽ tự xóa sau 15 giây.");
+        deleteAfter(doneMsg, 10000);
     }
 
-    // Stop the music
-    if (message.content.includes(`${config.prefix}stop`)) {
-        await message.channel.send("⏹️ Đang gửi lệnh dừng nhạc...");
+    // !stop — Stop music
+    if (content.startsWith(`${config.prefix}stop`)) {
+        const statusMsg = await message.channel.send("⏹️ Đang gửi lệnh dừng nhạc...");
         await sendStopCommand();
-        await message.channel.send("✅ Đã gửi lệnh dừng.");
+        await statusMsg.delete().catch(() => {});
+        const doneMsg = await message.channel.send("✅ Đã dừng. Lệnh sẽ tự xóa sau 15 giây.");
+        deleteAfter(doneMsg, 10000);
     }
 
-    // Uptime report
-    if (message.content.includes(`${config.prefix}uptime`)) {
+    // !uptime — Report voice time for tracked users
+    if (content.startsWith(`${config.prefix}uptime`)) {
         updateTracking();
         let report = "📊 **Báo cáo từ 00:00 GMT+7:**\n";
 
-        userJoinTimes.forEach((startTime, userId) => {
-            const durationMs = Date.now() - startTime;
-            const hours = Math.floor(durationMs / 3600000);
-            const mins = Math.floor((durationMs % 3600000) / 60000);
-            report += `<@${userId}>: ${hours}h ${mins}m\n`;
-        });
+        if (userJoinTimes.size === 0) {
+            report += "_Không có dữ liệu._";
+        } else {
+            userJoinTimes.forEach((startTime, userId) => {
+                const durationMs = Date.now() - startTime;
+                const hours = Math.floor(durationMs / 3600000);
+                const mins = Math.floor((durationMs % 3600000) / 60000);
+                report += `<@${userId}>: ${hours}h ${mins}m\n`;
+            });
+        }
+
         await message.channel.send(report);
     }
 });
